@@ -226,70 +226,175 @@ async def fetch_france(
 
 # ── UK — Ordnance Survey Open Data ───────────────────────────────────────────
 
+OS_API_KEY = "KpPcU552wYROgNMtYHTmE18HgQl1UmXA"
+
+# OS Names API local type → WildData type mapping
+OS_TYPE_MAP = {
+    "waterfall":        ("Waterfall",      "waterfall"),
+    "lake":             ("Lake",           "lake"),
+    "loch":             ("Lake",           "lake"),
+    "reservoir":        ("Lake",           "lake"),
+    "mountain":         ("Peak",           "peak"),
+    "hill":             ("Peak",           "peak"),
+    "fell":             ("Peak",           "peak"),
+    "ben":              ("Peak",           "peak"),
+    "summit":           ("Peak",           "peak"),
+    "forest":           ("Forest",         "forest"),
+    "wood":             ("Forest",         "forest"),
+    "national park":    ("National Park",  "national_park"),
+    "country park":     ("Park",           "park"),
+    "valley":           ("Valley",         "valley"),
+    "glen":             ("Valley",         "valley"),
+    "dale":             ("Valley",         "valley"),
+    "gorge":            ("Canyon",         "canyon"),
+    "cave":             ("Cave",           "cave"),
+    "cliff":            ("Viewpoint",      "viewpoint"),
+    "bay":              ("Beach",          "beach"),
+    "beach":            ("Beach",          "beach"),
+    "moor":             ("Moor",           "nature_reserve"),
+    "heath":            ("Moor",           "nature_reserve"),
+    "nature reserve":   ("Nature Reserve", "nature_reserve"),
+    "river":            ("River",          "river"),
+    "stream":           ("River",          "river"),
+    "island":           ("Island",         "island"),
+}
+
+def _os_guess_type(local_type: str, name: str):
+    """Map OS local type string to WildData type."""
+    lt = (local_type or "").lower()
+    nm = (name or "").lower()
+    for key, val in OS_TYPE_MAP.items():
+        if key in lt or key in nm:
+            return val
+    return ("Natural Feature", "natural")
+
+def _os_within_radius(lat, lng, feat_lat, feat_lng, radius_km):
+    import math
+    R = 6371
+    dlat = math.radians(feat_lat - lat)
+    dlng = math.radians(feat_lng - lng)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(feat_lat)) * math.sin(dlng/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)) <= radius_km
+
 async def fetch_uk(
     lat: float, lng: float, radius_km: float, feature_ids: List[str]
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    UK: OS Open Names API (free, no key for basic use)
-    + Natural England protected areas
+    UK: Ordnance Survey Names API (official UK geographic names database)
+    Covers: peaks, lakes, waterfalls, forests, national parks, valleys, caves,
+            beaches, rivers, moors — all official OS named features.
+    API key: OS Data Hub free tier (1M transactions/month)
     """
+
+    # OS Names categories relevant to outdoor features
+    OS_LOCAL_TYPES = [
+        "Waterfall", "Lake", "Loch", "Reservoir", "Mountain", "Hill", "Fell",
+        "Forest", "Wood", "National Park", "Country Park", "Valley", "Glen",
+        "Dale", "Gorge", "Cave", "Cliff", "Bay", "Beach", "Moor", "Heath",
+        "Nature Reserve", "River", "Stream", "Island", "Summit", "Nature Reserve",
+        "Area of Outstanding Natural Beauty", "Site of Special Scientific Interest",
+    ]
+
+    seen = set()
+    radius_m = int(min(radius_km * 1000, 100000))  # OS max 100km
+
     try:
-        await rate_limiter.wait("api.os.uk", 0.5)
+        await rate_limiter.wait("api.os.uk", 0.6)
         async with httpx.AsyncClient(timeout=30) as client:
+
+            # ── Query 1: nearest named features ──────────────────────────
             resp = await client.get(
                 "https://api.os.uk/search/names/v1/nearest",
                 params={
                     "point": f"{lng},{lat}",
-                    "radius": min(radius_km * 1000, 100000),
-                    "key": "FREE_TIER",  # OS free tier
+                    "radius": radius_m,
+                    "key": OS_API_KEY,
                 },
             )
-            # OS API requires a free key — fallback to Wikipedia
-    except:
-        pass
-
-    # UK Wikipedia GeoSearch as reliable fallback
-    try:
-        await rate_limiter.wait("en.wikipedia.org", 0.5)
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "list": "geosearch",
-                    "gscoord": f"{lat}|{lng}",
-                    "gsradius": min(radius_km * 1000, 10000),
-                    "gslimit": 50,
-                    "format": "json",
-                    "origin": "*",
-                },
-            )
-            data = resp.json()
-            for page in data.get("query", {}).get("geosearch", []):
-                title = page.get("title", "")
-                uk_keywords = ['moor', 'fell', 'ben', 'loch', 'glen', 'peak', 'dale', 'forest', 'park', 'coast', 'cliff', 'waterfall', 'lake', 'mountain', 'hill', 'cave', 'bay']
-                if any(kw in title.lower() for kw in uk_keywords):
-                    from extractors.wikipedia import guess_type
-                    type_label, type_id = guess_type(title)
+            if resp.status_code == 200:
+                data = resp.json()
+                for feat in data.get("results", []):
+                    g = feat.get("GAZETTEER_ENTRY", {})
+                    name = g.get("NAME1", "") or g.get("NAME2", "")
+                    if not name or name in seen:
+                        continue
+                    local_type = g.get("LOCAL_TYPE", "")
+                    if not any(lt.lower() in local_type.lower() for lt in OS_LOCAL_TYPES):
+                        continue
+                    f_lat = g.get("GEOMETRY_Y")
+                    f_lng = g.get("GEOMETRY_X")
+                    if not f_lat or not f_lng:
+                        continue
+                    if not _os_within_radius(lat, lng, f_lat, f_lng, radius_km):
+                        continue
+                    seen.add(name)
+                    type_label, type_id = _os_guess_type(local_type, name)
                     yield {
-                        "name": title,
-                        "type": type_label,
-                        "type_id": type_id,
-                        "lat": page.get("lat", 0),
-                        "lng": page.get("lon", 0),
-                        "elevation": "",
-                        "description": "",
-                        "wikipedia": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
-                        "website": "",
-                        "region": "",
-                        "country": "United Kingdom",
-                        "image": "",
-                        "osm_id": "",
-                        "source": "Wikipedia (UK)",
-                        "confidence": "High",
+                        "name":        name,
+                        "type":        type_label,
+                        "lat":         round(f_lat, 6),
+                        "lng":         round(f_lng, 6),
+                        "elevation":   g.get("POSTCODE_DISTRICT", ""),
+                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", ""),
+                        "country":     "United Kingdom",
+                        "description": f"{local_type} — {g.get('POPULATED_PLACE', '')}".strip(" —"),
+                        "wikipedia":   "",
+                        "website":     "https://osdatahub.os.uk",
+                        "image":       "",
+                        "osm_id":      g.get("OS_ID", ""),
+                        "source":      "Ordnance Survey (OS Names API)",
+                        "confidence":  "High",
                     }
+
+            # ── Query 2: text search for national parks + AONBs ───────────
+            await rate_limiter.wait("api.os.uk", 0.6)
+            for search_term in ["national park", "forest", "moor"]:
+                resp2 = await client.get(
+                    "https://api.os.uk/search/names/v1/find",
+                    params={
+                        "query":      search_term,
+                        "bounds":     f"{lng - radius_km/111},{lat - radius_km/111},{lng + radius_km/111},{lat + radius_km/111}",
+                        "maxresults": 20,
+                        "key":        OS_API_KEY,
+                    },
+                )
+                if resp2.status_code != 200:
+                    continue
+                data2 = resp2.json()
+                for feat in data2.get("results", []):
+                    g = feat.get("GAZETTEER_ENTRY", {})
+                    name = g.get("NAME1", "") or g.get("NAME2", "")
+                    if not name or name in seen:
+                        continue
+                    f_lat = g.get("GEOMETRY_Y")
+                    f_lng = g.get("GEOMETRY_X")
+                    if not f_lat or not f_lng:
+                        continue
+                    if not _os_within_radius(lat, lng, f_lat, f_lng, radius_km):
+                        continue
+                    seen.add(name)
+                    local_type = g.get("LOCAL_TYPE", "")
+                    type_label, type_id = _os_guess_type(local_type, name)
+                    yield {
+                        "name":        name,
+                        "type":        type_label,
+                        "lat":         round(f_lat, 6),
+                        "lng":         round(f_lng, 6),
+                        "elevation":   "",
+                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", ""),
+                        "country":     "United Kingdom",
+                        "description": f"{local_type} — {g.get('POPULATED_PLACE', '')}".strip(" —"),
+                        "wikipedia":   "",
+                        "website":     "https://osdatahub.os.uk",
+                        "image":       "",
+                        "osm_id":      g.get("OS_ID", ""),
+                        "source":      "Ordnance Survey (OS Names API)",
+                        "confidence":  "High",
+                    }
+                await rate_limiter.wait("api.os.uk", 0.6)
+
     except Exception as e:
-        print(f"[UK] error: {e}")
+        print(f"[UK/OS] error: {e}")
 
 
 # ── New Zealand — DOC API ─────────────────────────────────────────────────────
