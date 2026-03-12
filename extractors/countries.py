@@ -6,6 +6,7 @@ Each function is an async generator yielding result dicts.
 import httpx
 from typing import AsyncGenerator, Dict, Any, List
 from utils.rate_limiter import rate_limiter
+from extractors.greece import fetch_greece
 
 # ── USA — USGS + NPS ──────────────────────────────────────────────────────────
 
@@ -615,6 +616,7 @@ COUNTRY_EXTRACTORS = {
     "AU": fetch_australia,
     "JP": fetch_japan,
     "IN": fetch_india,
+    "GR": fetch_greece,
 }
 
 async def fetch_country_specific(
