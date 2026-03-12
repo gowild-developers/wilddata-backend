@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WildData — Outdoor Feature Extractor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root {
+  --bg:#0a0f0d;--bg2:#111a16;--bg3:#1a2820;--border:#2a3d34;
+  --accent:#3ddc84;--accent2:#00c4ff;--accent3:#ff6b35;
+  --text:#e8f5ee;--text2:#8aab97;--text3:#4d6b58;
+  --card:#131e19;--danger:#ff4545;--warn:#ffb347;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(61,220,132,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(61,220,132,0.03) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+.app{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:24px}
+header{display:flex;align-items:center;justify-content:space-between;padding:20px 0 32px;border-bottom:1px solid var(--border);margin-bottom:32px}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-icon{width:40px;height:40px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.logo h1{font-size:22px;font-weight:800;letter-spacing:-0.5px}
+.logo span{color:var(--accent)}
+.api-url-chip{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);border:1px solid var(--border);padding:4px 10px;border-radius:20px;display:flex;align-items:center;gap:6px}
+.api-dot{width:6px;height:6px;border-radius:50%;background:var(--text3)}
+.api-dot.connected{background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.layout{display:grid;grid-template-columns:360px 1fr;gap:24px;align-items:start}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px}
+.panel-title{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:20px;font-family:'JetBrains Mono',monospace}
+.search-wrap{position:relative;margin-bottom:16px}
+.search-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 16px 12px 42px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none;transition:border-color .2s}
+.search-input:focus{border-color:var(--accent)}
+.search-input::placeholder{color:var(--text3)}
+.search-icon{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:16px}
+.suggestions{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:10px;z-index:100;max-height:200px;overflow-y:auto;display:none}
+.suggestions.show{display:block}
+.suggestion-item{padding:10px 14px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);transition:background .15s;display:flex;align-items:center;gap:8px}
+.suggestion-item:last-child{border-bottom:none}
+.suggestion-item:hover{background:var(--bg3)}
+.stype{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;background:var(--bg3);padding:2px 6px;border-radius:4px;white-space:nowrap}
+.country-chip{display:none;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:12px;color:var(--text2)}
+.country-chip.show{display:flex}
+.strategy-badge{font-size:10px;font-family:'JetBrains Mono',monospace;padding:2px 8px;border-radius:4px;font-weight:600}
+.strategy-osm{background:rgba(61,220,132,.15);color:var(--accent)}
+.strategy-wiki{background:rgba(0,196,255,.15);color:var(--accent2)}
+.slider-wrap{margin-bottom:20px}
+.slider-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;color:var(--text2)}
+.slider-label strong{color:var(--accent);font-family:'JetBrains Mono',monospace}
+input[type=range]{width:100%;-webkit-appearance:none;height:4px;background:var(--border);border-radius:2px;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:var(--accent);border-radius:50%;cursor:pointer}
+.features-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px}
+.feature-chip{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;color:var(--text2);transition:all .15s;user-select:none}
+.feature-chip:hover{border-color:var(--accent);color:var(--text)}
+.feature-chip.active{border-color:var(--accent);background:rgba(61,220,132,.08);color:var(--accent)}
+.sources-list{display:flex;flex-direction:column;gap:6px;margin-bottom:20px}
+.source-row{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;font-size:12px}
+.source-name{color:var(--text2)}
+.source-status{font-family:'JetBrains Mono',monospace;font-size:10px}
+.source-status.active{color:var(--accent)}
+.source-status.inactive{color:var(--text3)}
+.source-status.pending{color:var(--warn)}
+.limit-wrap{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.limit-wrap label{font-size:12px;color:var(--text2);flex:1}
+.limit-input{width:80px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;text-align:center;outline:none}
+.limit-input:focus{border-color:var(--accent)}
+.api-input-wrap{margin-bottom:16px}
+.api-input-wrap label{font-size:11px;color:var(--text3);display:block;margin-bottom:6px;font-family:'JetBrains Mono',monospace}
+.api-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none}
+.api-input:focus{border-color:var(--accent)}
+.btn-extract{width:100%;padding:14px;background:var(--accent);color:#0a0f0d;border:none;border-radius:10px;font-family:'Syne',sans-serif;font-size:14px;font-weight:800;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.5px}
+.btn-extract:hover{background:#5aeea0;transform:translateY(-1px)}
+.btn-extract:disabled{background:var(--border);color:var(--text3);cursor:not-allowed;transform:none}
+.btn-stop{width:100%;padding:14px;background:transparent;color:var(--danger);border:1px solid var(--danger);border-radius:10px;font-family:'Syne',sans-serif;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;transition:all .2s;display:none}
+.btn-stop:hover{background:rgba(255,69,69,.1)}
+.btn-stop.show{display:block}
+.right-col{display:flex;flex-direction:column;gap:20px}
+.progress-panel{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px 24px;display:none}
+.progress-panel.show{display:block}
+.progress-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.progress-title{font-size:13px;font-weight:700}
+.progress-count{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--accent)}
+.progress-bar-wrap{background:var(--bg3);border-radius:4px;height:6px;margin-bottom:12px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:4px;transition:width .3s ease;width:0%}
+.log-area{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:120px;overflow-y:auto;margin-top:12px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);line-height:1.8}
+.log-line{display:block}
+.log-line.info{color:var(--text2)}
+.log-line.success{color:var(--accent)}
+.log-line.warn{color:var(--warn)}
+.log-line.error{color:var(--danger)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center}
+.stat-num{font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent);line-height:1;margin-bottom:4px}
+.stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px}
+.table-panel{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.table-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.table-header h3{font-size:14px;font-weight:700}
+.export-btns{display:flex;gap:8px}
+.btn-export{padding:7px 14px;border-radius:8px;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1px solid;display:flex;align-items:center;gap:5px}
+.btn-csv{background:transparent;border-color:var(--accent);color:var(--accent)}
+.btn-csv:hover{background:rgba(61,220,132,.1)}
+.btn-xlsx{background:transparent;border-color:var(--accent2);color:var(--accent2)}
+.btn-xlsx:hover{background:rgba(0,196,255,.1)}
+.btn-clear{background:transparent;border-color:var(--border);color:var(--text3)}
+.btn-clear:hover{border-color:var(--danger);color:var(--danger)}
+.table-wrap{overflow-x:auto;max-height:420px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead{position:sticky;top:0;z-index:10}
+thead tr{background:var(--bg3)}
+th{padding:10px 12px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);font-family:'JetBrains Mono',monospace;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid rgba(42,61,52,.5);color:var(--text2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover td{background:rgba(61,220,132,.03);color:var(--text)}
+.td-name{color:var(--text);font-weight:600}
+.confidence-chip{font-size:10px;font-family:'JetBrains Mono',monospace;padding:2px 7px;border-radius:4px;font-weight:600}
+.conf-high{background:rgba(61,220,132,.12);color:var(--accent)}
+.conf-med{background:rgba(255,179,71,.12);color:var(--warn)}
+.conf-low{background:rgba(255,69,69,.1);color:var(--danger)}
+.empty-state{text-align:center;padding:60px 20px;color:var(--text3)}
+.empty-state .big-icon{font-size:48px;margin-bottom:12px;opacity:.4}
+.empty-state p{font-size:13px}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.stats-bar{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🌿</div>
+      <div>
+        <h1>Wild<span>Data</span></h1>
+        <div style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace">Outdoor Feature Extractor</div>
+      </div>
+    </div>
+    <div class="api-url-chip">
+      <div class="api-dot" id="apiDot"></div>
+      <span id="apiUrlDisplay">Not connected</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- LEFT -->
+    <div style="display:flex;flex-direction:column;gap:16px">
+
+      <!-- API Config -->
+      <div class="panel">
+        <div class="panel-title">⚙️ Backend API</div>
+        <div class="api-input-wrap">
+          <label>YOUR RENDER.COM API URL</label>
+          <input class="api-input" id="apiUrl"
+            placeholder="https://wilddata-api.onrender.com"
+            value="https://wilddata-api.onrender.com"/>
+        </div>
+        <button onclick="testConnection()" style="width:100%;padding:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:12px;cursor:pointer;font-family:'Syne',sans-serif;transition:all .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          Test Connection
+        </button>
+      </div>
+
+      <!-- Search -->
+      <div class="panel">
+        <div class="panel-title">📍 Location</div>
+        <div class="search-wrap">
+          <span class="search-icon">🔍</span>
+          <input class="search-input" id="searchInput" type="text"
+            placeholder="Kasol, France, Spiti Valley..."
+            autocomplete="off"/>
+          <div class="suggestions" id="suggestions"></div>
+        </div>
+        <div class="country-chip" id="countryChip">
+          <span id="countryFlag">🌍</span>
+          <span id="countryName">—</span>
+          <span class="strategy-badge" id="strategyBadge">—</span>
+        </div>
+        <div class="slider-wrap">
+          <div class="slider-label">Radius <strong id="radiusVal">25 km</strong></div>
+          <input type="range" id="radiusSlider" min="5" max="300" value="25" step="5"/>
+        </div>
+        <div class="limit-wrap">
+          <label>Max results per feature</label>
+          <input class="limit-input" id="limitInput" type="number" value="300" min="10" max="2000"/>
+        </div>
+      </div>
+
+      <!-- Features -->
+      <div class="panel">
+        <div class="panel-title">🗂 Feature Types</div>
+        <div class="features-grid" id="featuresGrid"></div>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button onclick="selectAll()" style="flex:1;padding:6px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-size:11px;cursor:pointer;font-family:'Syne',sans-serif">Select All</button>
+          <button onclick="clearAll()" style="flex:1;padding:6px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-size:11px;cursor:pointer;font-family:'Syne',sans-serif">Clear</button>
+        </div>
+      </div>
+
+      <!-- Enrichment options -->
+      <div class="panel">
+        <div class="panel-title">✨ Enrichment</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="enrichWiki" checked style="accent-color:var(--accent)"/>
+            Wikipedia descriptions
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="enrichGeo" checked style="accent-color:var(--accent)"/>
+            Reverse geocoding (region/country)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="enrichElev" checked style="accent-color:var(--accent)"/>
+            Elevation data
+          </label>
+        </div>
+      </div>
+
+      <button class="btn-extract" id="extractBtn" onclick="startExtraction()">▶ Extract Data</button>
+      <button class="btn-stop" id="stopBtn" onclick="stopExtraction()">■ Stop</button>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="right-col">
+      <div class="stats-bar">
+        <div class="stat-card"><div class="stat-num" id="statTotal">0</div><div class="stat-label">Total Found</div></div>
+        <div class="stat-card"><div class="stat-num" id="statNamed">0</div><div class="stat-label">Named</div></div>
+        <div class="stat-card"><div class="stat-num" id="statHigh">0</div><div class="stat-label">High Confidence</div></div>
+        <div class="stat-card"><div class="stat-num" id="statSources">0</div><div class="stat-label">Sources</div></div>
+      </div>
+
+      <div class="progress-panel" id="progressPanel">
+        <div class="progress-header">
+          <span class="progress-title" id="progressTitle">Extracting...</span>
+          <span class="progress-count" id="progressCount">0 results</span>
+        </div>
+        <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="log-area" id="logArea"></div>
+      </div>
+
+      <div class="table-panel">
+        <div class="table-header">
+          <h3>Results <span style="color:var(--text3);font-size:12px;font-weight:400" id="tableCount"></span></h3>
+          <div class="export-btns">
+            <button class="btn-export btn-clear" onclick="clearResults()">🗑</button>
+            <button class="btn-export btn-csv" onclick="exportCSV()">↓ CSV</button>
+            <button class="btn-export btn-xlsx" onclick="exportXLSX()">↓ XLSX</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>#</th><th>Name</th><th>Type</th><th>Lat</th><th>Lng</th>
+              <th>Elevation</th><th>Region</th><th>Country</th>
+              <th>Description</th><th>Wikipedia</th><th>Source</th><th>Confidence</th>
+            </tr></thead>
+            <tbody id="tableBody">
+              <tr><td colspan="12"><div class="empty-state">
+                <div class="big-icon">🗺️</div>
+                <p>1. Enter your Render.com API URL above<br>2. Search a location<br>3. Click Extract Data</p>
+              </div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const FEATURES = [
+  {id:"waterfall",label:"Waterfalls",icon:"💧"},
+  {id:"hiking",label:"Hiking Routes",icon:"🥾"},
+  {id:"mtb",label:"MTB / Cycling",icon:"🚵"},
+  {id:"motorbiking",label:"Motorbiking",icon:"🏍️"},
+  {id:"peak",label:"Peaks / Summits",icon:"⛰️"},
+  {id:"park",label:"National Parks",icon:"🌲"},
+  {id:"viewpoint",label:"Viewpoints",icon:"👁️"},
+  {id:"camp",label:"Campsites",icon:"⛺"},
+  {id:"cave",label:"Caves",icon:"🦇"},
+  {id:"hot_spring",label:"Hot Springs",icon:"♨️"},
+  {id:"waterway",label:"Rivers / Lakes",icon:"🏞️"},
+  {id:"beach",label:"Beaches",icon:"🏖️"},
+  {id:"glacier",label:"Glaciers",icon:"🧊"},
+  {id:"volcano",label:"Volcanoes",icon:"🌋"},
+];
+
+const OSM_HIGH = ["FR","DE","GB","IT","ES","NL","BE","AT","CH","NO","SE","FI","DK","US","CA","AU","NZ","JP","PT","GR"];
+const OSM_LOW  = ["IN","NP","PK","BD","CN","MM","KH","LA","AF"];
+
+let selectedPlace = null;
+let selectedFeatures = new Set(["waterfall","hiking","peak"]);
+let results = [];
+let abortController = null;
+let suggestTimer = null;
+let sourcesUsed = new Set();
+
+// ── Init
+function init() {
+  renderChips();
+  document.getElementById('radiusSlider').addEventListener('input', e => {
+    document.getElementById('radiusVal').textContent = e.target.value + ' km';
+  });
+  setupSearch();
+  // Load saved API URL
+  const saved = localStorage.getItem('wilddata_api_url');
+  if (saved) document.getElementById('apiUrl').value = saved;
+}
+
+function getApiUrl() {
+  const url = document.getElementById('apiUrl').value.trim().replace(/\/$/, '');
+  localStorage.setItem('wilddata_api_url', url);
+  return url;
+}
+
+async function testConnection() {
+  const url = getApiUrl();
+  if (!url) { alert('Enter your API URL first'); return; }
+  try {
+    log('Testing connection to ' + url, 'info');
+    const res = await fetch(url + '/health', { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      document.getElementById('apiDot').classList.add('connected');
+      document.getElementById('apiUrlDisplay').textContent = url.replace('https://','');
+      log('✓ Connected successfully!', 'success');
+      document.getElementById('progressPanel').classList.add('show');
+    } else {
+      log('Connection failed: HTTP ' + res.status, 'error');
+    }
+  } catch(e) {
+    log('Connection failed: ' + e.message + ' — Is your Render.com backend running?', 'error');
+    document.getElementById('progressPanel').classList.add('show');
+  }
+}
+
+// ── Feature chips
+function renderChips() {
+  document.getElementById('featuresGrid').innerHTML = FEATURES.map(f => `
+    <div class="feature-chip ${selectedFeatures.has(f.id)?'active':''}" onclick="toggleFeature('${f.id}')">
+      <span>${f.icon}</span><span>${f.label}</span>
+    </div>`).join('');
+}
+function toggleFeature(id) {
+  selectedFeatures.has(id) ? selectedFeatures.delete(id) : selectedFeatures.add(id);
+  renderChips();
+}
+function selectAll() { FEATURES.forEach(f => selectedFeatures.add(f.id)); renderChips(); }
+function clearAll()   { selectedFeatures.clear(); renderChips(); }
+
+// ── Search
+function setupSearch() {
+  const input = document.getElementById('searchInput');
+  input.addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    const q = input.value.trim();
+    if (q.length < 3) { document.getElementById('suggestions').classList.remove('show'); return; }
+    suggestTimer = setTimeout(() => fetchSuggestions(q), 400);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.search-wrap')) document.getElementById('suggestions').classList.remove('show');
+  });
+}
+
+async function fetchSuggestions(q) {
+  const apiUrl = getApiUrl();
+  if (!apiUrl) return;
+  try {
+    const res = await fetch(`${apiUrl}/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    const box = document.getElementById('suggestions');
+    if (!data.length) { box.classList.remove('show'); return; }
+    box.innerHTML = data.map(d => `
+      <div class="suggestion-item" onclick='selectPlace(${JSON.stringify(d).replace(/'/g,"&#39;")})'>
+        <span>📍</span>
+        <span style="flex:1">${d.display_name.split(',').slice(0,3).join(',')}</span>
+        <span class="stype">${d.type}</span>
+      </div>`).join('');
+    box.classList.add('show');
+  } catch(e) {
+    // Backend not connected — silent fail
+  }
+}
+
+function selectPlace(place) {
+  selectedPlace = place;
+  document.getElementById('searchInput').value = place.display_name.split(',').slice(0,3).join(',');
+  document.getElementById('suggestions').classList.remove('show');
+  const cc = (place.address?.country_code || '').toUpperCase();
+  const country = place.address?.country || '';
+  const flag = cc ? getFlagEmoji(cc) : '🌍';
+  const isHigh = OSM_HIGH.includes(cc);
+  const isLow  = OSM_LOW.includes(cc);
+  const strategy = isHigh ? 'OSM-Primary' : isLow ? 'Wiki-Primary' : 'Mixed';
+  const cls = isHigh ? 'strategy-osm' : 'strategy-wiki';
+  document.getElementById('countryFlag').textContent = flag;
+  document.getElementById('countryName').textContent = country;
+  document.getElementById('strategyBadge').textContent = strategy;
+  document.getElementById('strategyBadge').className = 'strategy-badge ' + cls;
+  document.getElementById('countryChip').classList.add('show');
+}
+
+function getFlagEmoji(cc) {
+  return cc.toUpperCase().split('').map(c => String.fromCodePoint(c.charCodeAt(0)+127397)).join('');
+}
+
+// ── Extraction
+async function startExtraction() {
+  if (!selectedPlace) { alert('Search and select a location first.'); return; }
+  if (!selectedFeatures.size) { alert('Select at least one feature type.'); return; }
+  const apiUrl = getApiUrl();
+  if (!apiUrl) { alert('Enter your Render.com API URL first.'); return; }
+
+  results = [];
+  sourcesUsed = new Set();
+  abortController = new AbortController();
+  document.getElementById('extractBtn').disabled = true;
+  document.getElementById('stopBtn').classList.add('show');
+  document.getElementById('progressPanel').classList.add('show');
+  document.getElementById('progressTitle').textContent = 'Extracting...';
+  document.getElementById('tableBody').innerHTML = '';
+  updateStats();
+
+  const params = new URLSearchParams({
+    lat: selectedPlace.lat,
+    lng: selectedPlace.lon,
+    radius_km: document.getElementById('radiusSlider').value,
+    features: [...selectedFeatures].join(','),
+    limit: document.getElementById('limitInput').value,
+    country_code: (selectedPlace.address?.country_code || '').toUpperCase(),
+    enrich_wiki: document.getElementById('enrichWiki').checked,
+    enrich_elevation: document.getElementById('enrichElev').checked,
+    enrich_geocoding: document.getElementById('enrichGeo').checked,
+  });
+
+  log('Starting extraction...', 'info');
+  log(`Location: ${selectedPlace.lat}, ${selectedPlace.lon} | Radius: ${params.get('radius_km')}km`, 'info');
+
+  try {
+    const res = await fetch(`${apiUrl}/extract?${params}`, {
+      signal: abortController.signal,
+    });
+
+    if (!res.ok) {
+      log(`Server error: HTTP ${res.status}`, 'error');
+      done();
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done: streamDone } = await reader.read();
+      if (streamDone) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          handleMessage(msg);
+        } catch(e) {}
+      }
+    }
+  } catch(e) {
+    if (e.name !== 'AbortError') {
+      log('Error: ' + e.message, 'error');
+    }
+  }
+
+  done();
+}
+
+function handleMessage(msg) {
+  if (msg.type === 'progress') {
+    log(msg.message, msg.message.includes('done') || msg.message.includes('✓') ? 'success' : 'info');
+    document.getElementById('progressTitle').textContent = msg.message;
+    if (msg.count !== undefined) {
+      document.getElementById('progressCount').textContent = msg.count + ' results';
+      const pct = Math.min((msg.count / parseInt(document.getElementById('limitInput').value)) * 60, 90);
+      document.getElementById('progressBar').style.width = pct + '%';
+    }
+    // Track source
+    const stage = msg.stage || '';
+    if (['osm','wikidata','wikipedia','country'].includes(stage)) sourcesUsed.add(stage);
+  }
+  else if (msg.type === 'results') {
+    results.push(...(msg.data || []));
+    renderTableRows(msg.data || []);
+    updateStats();
+  }
+  else if (msg.type === 'final') {
+    results = msg.data || [];
+    renderTable();
+    updateStats();
+  }
+  else if (msg.type === 'done') {
+    document.getElementById('progressBar').style.width = '100%';
+    document.getElementById('progressTitle').textContent = `Complete ✓ — ${msg.total} features`;
+    log(`✓ Done! ${msg.total} unique features extracted.`, 'success');
+  }
+  else if (msg.type === 'error') {
+    log('Error: ' + msg.message, 'error');
+  }
+}
+
+function done() {
+  document.getElementById('extractBtn').disabled = false;
+  document.getElementById('stopBtn').classList.remove('show');
+}
+
+function stopExtraction() {
+  abortController?.abort();
+  log('Stopped by user.', 'warn');
+  done();
+}
+
+// ── Table rendering
+function renderTable() {
+  document.getElementById('tableBody').innerHTML = '';
+  document.getElementById('tableCount').textContent = `— ${results.length} rows`;
+  if (!results.length) {
+    document.getElementById('tableBody').innerHTML = `<tr><td colspan="12"><div class="empty-state"><div class="big-icon">🔍</div><p>No results found.</p></div></td></tr>`;
+    return;
+  }
+  renderTableRows(results);
+}
+
+function renderTableRows(rows) {
+  const tbody = document.getElementById('tableBody');
+  // Remove empty state if present
+  if (tbody.querySelector('.empty-state')) tbody.innerHTML = '';
+  document.getElementById('tableCount').textContent = `— ${results.length} rows`;
+
+  const confClass = c => c==='High'?'conf-high':c==='Medium'?'conf-med':'conf-low';
+  rows.forEach((r, _) => {
+    const i = results.indexOf(r) + 1;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i}</td>
+      <td class="td-name" title="${r.name||''}">${r.name || '<em style="color:var(--text3)">Unnamed</em>'}</td>
+      <td>${r.type||''}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${parseFloat(r.lat||0).toFixed(5)}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${parseFloat(r.lng||0).toFixed(5)}</td>
+      <td>${r.elevation||'—'}</td>
+      <td>${r.region||'—'}</td>
+      <td>${r.country||'—'}</td>
+      <td title="${r.description||''}">${r.description?r.description.slice(0,60)+'...':'—'}</td>
+      <td>${r.wikipedia?`<a href="${r.wikipedia}" target="_blank" style="color:var(--accent2);font-size:11px">↗ Wiki</a>`:'—'}</td>
+      <td style="font-size:11px">${r.source||''}</td>
+      <td><span class="confidence-chip ${confClass(r.confidence||'Low')}">${r.confidence||'Low'}</span></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateStats() {
+  document.getElementById('statTotal').textContent = results.length;
+  document.getElementById('statNamed').textContent = results.filter(r => r.name && !r.name.startsWith(r.type)).length;
+  document.getElementById('statHigh').textContent = results.filter(r => r.confidence === 'High').length;
+  document.getElementById('statSources').textContent = sourcesUsed.size;
+}
+
+// ── Export
+function getExportData() {
+  return results.map((r, i) => ({
+    '#': i+1,
+    'Name': r.name || 'Unnamed',
+    'Type': r.type || '',
+    'Latitude': r.lat,
+    'Longitude': r.lng,
+    'Elevation': r.elevation || '',
+    'Region / State': r.region || '',
+    'Country': r.country || '',
+    'Description': r.description || '',
+    'Wikipedia URL': r.wikipedia || '',
+    'Website': r.website || '',
+    'Image URL': r.image || '',
+    'OSM ID': r.osm_id || '',
+    'Data Source': r.source || '',
+    'Confidence': r.confidence || '',
+    'Google Maps': `https://maps.google.com/?q=${r.lat},${r.lng}`,
+  }));
+}
+
+function exportCSV() {
+  if (!results.length) { alert('No data to export.'); return; }
+  const data = getExportData();
+  const headers = Object.keys(data[0]);
+  const rows = data.map(r => headers.map(h => `"${String(r[h]).replace(/"/g,'""')}"`).join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `wilddata_${Date.now()}.csv`;
+  a.click();
+}
+
+function exportXLSX() {
+  if (!results.length) { alert('No data to export.'); return; }
+  const data = getExportData();
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = Object.keys(data[0]).map(k => ({ wch: Math.max(k.length + 2, 15) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Outdoor Features');
+  const meta = XLSX.utils.aoa_to_sheet([
+    ['WildData Export'],
+    ['Location', selectedPlace?.display_name || ''],
+    ['Extracted', new Date().toISOString()],
+    ['Total Results', results.length],
+    ['Sources', [...sourcesUsed].join(', ')],
+  ]);
+  XLSX.utils.book_append_sheet(wb, meta, 'Metadata');
+  XLSX.writeFile(wb, `wilddata_${Date.now()}.xlsx`);
+}
+
+function clearResults() {
+  results = [];
+  renderTable();
+  updateStats();
+}
+
+function log(msg, type='info') {
+  const area = document.getElementById('logArea');
+  const line = document.createElement('span');
+  line.className = `log-line ${type}`;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  area.appendChild(line);
+  area.appendChild(document.createElement('br'));
+  area.scrollTop = area.scrollHeight;
+}
+
+init();
+</script>
+</body>
+</html>
