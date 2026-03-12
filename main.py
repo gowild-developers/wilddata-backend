@@ -53,9 +53,9 @@ async def extract(
     features: str = Query("waterfall,peak,hiking"),
     limit: int = Query(300, ge=10, le=2000),
     country_code: str = Query(""),
-    enrich_wiki: bool = Query(True),
-    enrich_elevation: bool = Query(True),
-    enrich_geocoding: bool = Query(True),
+    do_enrich_wiki: bool = Query(True),
+    do_enrich_elevation: bool = Query(True),
+    do_enrich_geocoding: bool = Query(True),
 ):
     """
     Main extraction endpoint — returns newline-delimited JSON (NDJSON) stream.
@@ -145,19 +145,19 @@ async def extract(
             yield json.dumps({"type": "progress", "stage": "dedup", "message": f"After dedup: {len(all_results)} unique features", "count": len(all_results)}) + "\n"
 
             # ── Stage 6: Enrich Wikipedia descriptions ─────────────────────
-            if enrich_wiki:
+            if do_enrich_wiki:
                 yield json.dumps({"type": "progress", "stage": "wiki_enrich", "message": "Fetching Wikipedia descriptions...", "count": len(all_results)}) + "\n"
                 all_results = await enrich_wikipedia_descriptions(all_results, max_enrichments=80)
                 yield json.dumps({"type": "progress", "stage": "wiki_enrich", "message": "Wikipedia enrichment done", "count": len(all_results)}) + "\n"
 
             # ── Stage 7: Reverse geocoding ─────────────────────────────────
-            if enrich_geocoding:
+            if do_enrich_geocoding:
                 yield json.dumps({"type": "progress", "stage": "geocoding", "message": "Reverse geocoding unnamed entries (max 40)...", "count": len(all_results)}) + "\n"
                 all_results = await enrich_geocoding(all_results, max_calls=40)
                 yield json.dumps({"type": "progress", "stage": "geocoding", "message": "Geocoding done", "count": len(all_results)}) + "\n"
 
             # ── Stage 8: Elevation ─────────────────────────────────────────
-            if enrich_elevation:
+            if do_enrich_elevation:
                 yield json.dumps({"type": "progress", "stage": "elevation", "message": "Fetching elevation data...", "count": len(all_results)}) + "\n"
                 all_results = await enrich_elevation(all_results, max_points=150)
                 yield json.dumps({"type": "progress", "stage": "elevation", "message": "Elevation done", "count": len(all_results)}) + "\n"
