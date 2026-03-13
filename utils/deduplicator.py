@@ -8,7 +8,7 @@ def haversine_km(lat1, lng1, lat2, lng2) -> float:
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-def deduplicate(results: List[Dict[str, Any]], radius_km: float = 0.1) -> List[Dict[str, Any]]:
+def deduplicate(results: List[Dict[str, Any]], radius_km: float = 0.05) -> List[Dict[str, Any]]:
     """
     Merge duplicate entries within radius_km of each other with same type.
     Keeps entry with most data, merges fields from others.
