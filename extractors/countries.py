@@ -9,6 +9,8 @@ from utils.rate_limiter import rate_limiter
 from extractors.greece import fetch_greece
 
 # ── USA — USGS + NPS ──────────────────────────────────────────────────────────
+import os
+NPS_API_KEY = os.getenv("USA_NPS_KEY", "DEMO_KEY")
 
 async def fetch_usa(
     lat: float, lng: float, radius_km: float, feature_ids: List[str]
@@ -29,7 +31,7 @@ async def fetch_usa(
                     "q": "",
                     "fields": "addresses,contacts,entranceFees,hours,images,operatingHours",
                 },
-                headers={"X-Api-Key": "DEMO_KEY"},  # DEMO_KEY works for testing, 40 req/hr
+                headers={"X-Api-Key": NPS_API_KEY},
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -226,7 +228,6 @@ async def fetch_france(
 
 # ── UK — Ordnance Survey Open Data ───────────────────────────────────────────
 
-import os
 OS_API_KEY = os.getenv("OS_API_KEY", "")
 
 # OS Names API local type → WildData type mapping
@@ -299,77 +300,54 @@ async def fetch_uk(
     seen = set()
     radius_m = int(min(radius_km * 1000, 100000))  # OS max 100km
 
-    try:
-        await rate_limiter.wait("api.os.uk", 0.6)
-        async with httpx.AsyncClient(timeout=30) as client:
+    # OS Names API /find with bbox — returns up to 100 results per query
+    # Correct format: bbox=minX,minY,maxX,maxY (lng/lat order)
+    deg = radius_km / 111.0
+    bbox = f"{lng-deg},{lat-deg},{lng+deg},{lat+deg}"
 
-            # ── Query 1: nearest named features ──────────────────────────
-            resp = await client.get(
-                "https://api.os.uk/search/names/v1/nearest",
-                params={
-                    "point": f"{lng},{lat}",
-                    "radius": radius_m,
-                    "key": OS_API_KEY,
-                },
-            )
-            if resp.status_code == 200:
+    # Search terms covering all outdoor feature types
+    search_terms = [
+        "fell", "moor", "forest", "lake", "loch", "reservoir",
+        "waterfall", "force", "beck", "tarn", "peak", "mountain",
+        "hill", "dale", "valley", "gorge", "cave", "cliff",
+        "national park", "nature reserve", "bay", "beach", "island",
+    ]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for term in search_terms:
+            try:
+                await rate_limiter.wait("api.os.uk", 0.6)
+                resp = await client.get(
+                    "https://api.os.uk/search/names/v1/find",
+                    params={
+                        "query":      term,
+                        "fq":         f"bbox:{bbox}",
+                        "maxresults": 100,
+                        "key":        OS_API_KEY,
+                    },
+                )
+                if resp.status_code != 200:
+                    print(f"[UK/OS] {term} → HTTP {resp.status_code}: {resp.text[:200]}")
+                    continue
+
                 data = resp.json()
                 for feat in data.get("results", []):
                     g = feat.get("GAZETTEER_ENTRY", {})
                     name = g.get("NAME1", "") or g.get("NAME2", "")
                     if not name or name in seen:
                         continue
-                    local_type = g.get("LOCAL_TYPE", "")
-                    if not any(lt.lower() in local_type.lower() for lt in OS_LOCAL_TYPES):
-                        continue
-                    f_lat = g.get("GEOMETRY_Y")
-                    f_lng = g.get("GEOMETRY_X")
+                    # OS returns coordinates in EPSG:27700 (BNG) as GEOMETRY_X/Y
+                    # but also provides LNG/LAT directly
+                    f_lat = g.get("LAT") or g.get("GEOMETRY_Y")
+                    f_lng = g.get("LNG") or g.get("GEOMETRY_X")
                     if not f_lat or not f_lng:
                         continue
-                    if not _os_within_radius(lat, lng, f_lat, f_lng, radius_km):
+                    try:
+                        f_lat, f_lng = float(f_lat), float(f_lng)
+                    except (TypeError, ValueError):
                         continue
-                    seen.add(name)
-                    type_label, type_id = _os_guess_type(local_type, name)
-                    yield {
-                        "name":        name,
-                        "type":        type_label,
-                        "lat":         round(f_lat, 6),
-                        "lng":         round(f_lng, 6),
-                        "elevation":   g.get("POSTCODE_DISTRICT", ""),
-                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", ""),
-                        "country":     "United Kingdom",
-                        "description": f"{local_type} — {g.get('POPULATED_PLACE', '')}".strip(" —"),
-                        "wikipedia":   "",
-                        "website":     "https://osdatahub.os.uk",
-                        "image":       "",
-                        "osm_id":      g.get("OS_ID", ""),
-                        "source":      "Ordnance Survey (OS Names API)",
-                        "confidence":  "High",
-                    }
-
-            # ── Query 2: text search for national parks + AONBs ───────────
-            await rate_limiter.wait("api.os.uk", 0.6)
-            for search_term in ["national park", "forest", "moor"]:
-                resp2 = await client.get(
-                    "https://api.os.uk/search/names/v1/find",
-                    params={
-                        "query":      search_term,
-                        "bounds":     f"{lng - radius_km/111},{lat - radius_km/111},{lng + radius_km/111},{lat + radius_km/111}",
-                        "maxresults": 20,
-                        "key":        OS_API_KEY,
-                    },
-                )
-                if resp2.status_code != 200:
-                    continue
-                data2 = resp2.json()
-                for feat in data2.get("results", []):
-                    g = feat.get("GAZETTEER_ENTRY", {})
-                    name = g.get("NAME1", "") or g.get("NAME2", "")
-                    if not name or name in seen:
-                        continue
-                    f_lat = g.get("GEOMETRY_Y")
-                    f_lng = g.get("GEOMETRY_X")
-                    if not f_lat or not f_lng:
+                    # Sanity check — UK is lat 49-61, lng -8 to 2
+                    if not (49 < f_lat < 61 and -8 < f_lng < 2):
                         continue
                     if not _os_within_radius(lat, lng, f_lat, f_lng, radius_km):
                         continue
@@ -382,9 +360,9 @@ async def fetch_uk(
                         "lat":         round(f_lat, 6),
                         "lng":         round(f_lng, 6),
                         "elevation":   "",
-                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", ""),
+                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", "") or g.get("POPULATED_PLACE", ""),
                         "country":     "United Kingdom",
-                        "description": f"{local_type} — {g.get('POPULATED_PLACE', '')}".strip(" —"),
+                        "description": f"{local_type}",
                         "wikipedia":   "",
                         "website":     "https://osdatahub.os.uk",
                         "image":       "",
@@ -392,10 +370,9 @@ async def fetch_uk(
                         "source":      "Ordnance Survey (OS Names API)",
                         "confidence":  "High",
                     }
-                await rate_limiter.wait("api.os.uk", 0.6)
-
-    except Exception as e:
-        print(f"[UK/OS] error: {e}")
+            except Exception as e:
+                print(f"[UK/OS] {term} error: {e}")
+                continue
 
 
 # ── New Zealand — DOC API ─────────────────────────────────────────────────────
