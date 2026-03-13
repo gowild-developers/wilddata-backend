@@ -29,7 +29,8 @@ async def fetch_usa(
                     "limit": 50,
                     "start": 0,
                     "q": "",
-                    "fields": "addresses,contacts,entranceFees,hours,images,operatingHours",
+                    "fields": "images,description,url",
+                    "sort": "relevance",
                 },
                 headers={"X-Api-Key": NPS_API_KEY},
             )
@@ -93,28 +94,40 @@ async def fetch_usa(
         try:
             await rate_limiter.wait("geonames.usgs.gov", 1.0)
             async with httpx.AsyncClient(timeout=30) as client:
+                # USGS GNIS correct endpoint
                 resp = await client.get(
                     "https://geonames.usgs.gov/api/geonames/search",
                     params={
                         "featureClass": fc,
-                        "radius": radius_km,
-                        "latitude": lat,
-                        "longitude": lng,
+                        "north": lat + radius_km/111,
+                        "south": lat - radius_km/111,
+                        "east": lng + radius_km/111,
+                        "west": lng - radius_km/111,
                         "maxRows": 100,
                         "type": "json",
-                        "username": "wilddata",
                     },
                 )
                 if resp.status_code != 200:
+                    print(f"[USA USGS] HTTP {resp.status_code}: {resp.text[:100]}")
                     continue
                 data = resp.json()
                 for item in data.get("geonames", []):
+                    try:
+                        f_lat = float(item.get("lat", 0))
+                        f_lng = float(item.get("lng", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    import math
+                    dlat = math.radians(f_lat - lat)
+                    dlng_v = math.radians(f_lng - lng)
+                    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(f_lat)) * math.sin(dlng_v/2)**2
+                    if 6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)) > radius_km:
+                        continue
                     yield {
                         "name": item.get("name", ""),
                         "type": fc,
-                        "type_id": fid,
-                        "lat": float(item.get("lat", 0)),
-                        "lng": float(item.get("lng", 0)),
+                        "lat": f_lat,
+                        "lng": f_lng,
                         "elevation": str(item.get("elevation", "")) + "m" if item.get("elevation") else "",
                         "description": item.get("fcodeName", ""),
                         "wikipedia": f"https://en.wikipedia.org/wiki/{item.get('name','').replace(' ','_')}",
@@ -136,94 +149,117 @@ async def fetch_france(
     lat: float, lng: float, radius_km: float, feature_ids: List[str]
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    France: data.gouv.fr — IGN official trails and natural areas.
-    Uses the Geo API for communes and natural features.
+    France: 
+    1. Geoportail IGN API — official French geographic features (peaks, lakes, forests)
+    2. French national parks hardcoded (stable govt data)
+    3. data.gouv.fr protected areas
     """
-    try:
-        # France GeoAPI — get nearby communes
-        await rate_limiter.wait("geo.api.gouv.fr", 0.5)
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                "https://geo.api.gouv.fr/communes",
-                params={
-                    "lat": lat,
-                    "lon": lng,
-                    "fields": "nom,code,departement,region,centre",
-                    "format": "json",
-                    "geometry": "centre",
-                    "limit": 20,
-                },
-            )
-            if resp.status_code == 200:
-                communes = resp.json()
-                # Use commune names to search IGN data
-                for commune in communes[:5]:
-                    region = commune.get("region", {}).get("nom", "")
-                    dept = commune.get("departement", {}).get("nom", "")
-                    centre = commune.get("centre", {}).get("coordinates", [lng, lat])
+    import math
 
-                    yield {
-                        "name": f"Commune: {commune.get('nom', '')}",
-                        "type": "Administrative Area",
-                        "type_id": "park",
-                        "lat": centre[1],
-                        "lng": centre[0],
-                        "elevation": "",
-                        "description": f"Commune in {dept}, {region}, France",
-                        "wikipedia": "",
-                        "website": "https://www.data.gouv.fr",
-                        "region": f"{dept}, {region}",
-                        "country": "France",
-                        "image": "",
-                        "osm_id": "",
-                        "source": "data.gouv.fr (France)",
-                        "confidence": "High",
-                    }
-    except Exception as e:
-        print(f"[France data.gouv.fr] error: {e}")
+    def in_radius(f_lat, f_lng):
+        dlat = math.radians(f_lat - lat)
+        dlng = math.radians(f_lng - lng)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(f_lat)) * math.sin(dlng/2)**2
+        return 6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)) <= radius_km
 
-    # France National Parks via Wikipedia (most reliable free source)
-    try:
-        await rate_limiter.wait("en.wikipedia.org", 0.5)
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "list": "geosearch",
-                    "gscoord": f"{lat}|{lng}",
-                    "gsradius": min(radius_km * 1000, 10000),
-                    "gslimit": 50,
-                    "format": "json",
-                    "origin": "*",
-                },
-            )
-            data = resp.json()
-            for page in data.get("query", {}).get("geosearch", []):
-                title = page.get("title", "")
-                french_keywords = ['forêt', 'parc', 'cascade', 'gorge', 'mont', 'lac', 'rivière', 'grotte', 'col']
-                if any(kw in title.lower() for kw in french_keywords + ['park', 'forest', 'waterfall', 'lake', 'mountain', 'cave', 'pass']):
-                    from extractors.wikipedia import guess_type
-                    type_label, type_id = guess_type(title)
-                    yield {
-                        "name": title,
-                        "type": type_label,
-                        "type_id": type_id,
-                        "lat": page.get("lat", 0),
-                        "lng": page.get("lon", 0),
-                        "elevation": "",
-                        "description": "",
-                        "wikipedia": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
-                        "website": "",
-                        "region": "",
-                        "country": "France",
-                        "image": "",
-                        "osm_id": "",
-                        "source": "Wikipedia+data.gouv.fr (France)",
-                        "confidence": "High",
-                    }
-    except Exception as e:
-        print(f"[France Wikipedia] error: {e}")
+    # 1. IGN Géoportail feature search (official French topo data)
+    IGN_TYPES = {
+        "waterfall": "Cascade",
+        "peak": "Sommet",
+        "lake": "Lac",
+        "cave": "Grotte",
+        "beach": "Plage",
+        "viewpoint": "Belvédère",
+        "hot_spring": "Source thermale",
+        "glacier": "Glacier",
+    }
+    deg = radius_km / 111.0
+    bbox = f"{lng-deg},{lat-deg},{lng+deg},{lat+deg}"
+
+    for fid in (feature_ids or list(IGN_TYPES.keys())):
+        ign_type = IGN_TYPES.get(fid)
+        if not ign_type:
+            continue
+        try:
+            await rate_limiter.wait("wxs.ign.fr", 0.5)
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get(
+                    "https://wxs.ign.fr/essentiels/geoportail/ols/apis/completion",
+                    params={
+                        "text": ign_type,
+                        "type": "StreetAddress,PositionOfInterest",
+                        "maximumResponses": 20,
+                        "bbox": bbox,
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("results", []):
+                        name = item.get("fulltext", "") or item.get("street", "")
+                        if not name:
+                            continue
+                        coords = item.get("position", "").split(",") if item.get("position") else []
+                        if len(coords) < 2:
+                            continue
+                        try:
+                            f_lat, f_lng = float(coords[0]), float(coords[1])
+                        except ValueError:
+                            continue
+                        if not in_radius(f_lat, f_lng):
+                            continue
+                        from extractors.wikipedia import guess_type
+                        type_label, _ = guess_type(name)
+                        yield {
+                            "name": name,
+                            "type": type_label,
+                            "lat": round(f_lat, 6),
+                            "lng": round(f_lng, 6),
+                            "elevation": "",
+                            "description": f"{ign_type} — IGN official data",
+                            "wikipedia": "",
+                            "website": "https://www.geoportail.gouv.fr",
+                            "region": item.get("departement", ""),
+                            "country": "France",
+                            "image": "",
+                            "osm_id": "",
+                            "source": "IGN Géoportail (France)",
+                            "confidence": "High",
+                        }
+        except Exception as e:
+            print(f"[France IGN] {fid} error: {e}")
+
+    # 2. French National Parks — hardcoded official list
+    FRENCH_NATIONAL_PARKS = [
+        {"name": "Vanoise National Park", "lat": 45.3833, "lng": 6.6667, "desc": "First national park of France, protecting the largest alpine area."},
+        {"name": "Port-Cros National Park", "lat": 43.0000, "lng": 6.4000, "desc": "Marine national park in the Mediterranean."},
+        {"name": "Pyrenees National Park", "lat": 42.8333, "lng": -0.1667, "desc": "Spectacular Pyrenean landscapes along the Spanish border."},
+        {"name": "Cevennes National Park", "lat": 44.2167, "lng": 3.6667, "desc": "UNESCO World Heritage biosphere, granite mountains and wild rivers."},
+        {"name": "Ecrins National Park", "lat": 44.9167, "lng": 6.3333, "desc": "Highest peaks in the French Alps outside Mont Blanc massif."},
+        {"name": "Mercantour National Park", "lat": 44.1167, "lng": 7.0000, "desc": "Alpine park bordering Italy with wild wolves and ibex."},
+        {"name": "Guadeloupe National Park", "lat": 16.1500, "lng": -61.7000, "desc": "Tropical rainforest and volcano La Soufrière."},
+        {"name": "La Reunion National Park", "lat": -21.1000, "lng": 55.5000, "desc": "UNESCO World Heritage, active volcano Piton de la Fournaise."},
+        {"name": "Calanques National Park", "lat": 43.2000, "lng": 5.5000, "desc": "Stunning limestone coastal cliffs near Marseille."},
+        {"name": "Forets National Park", "lat": 47.8333, "lng": 4.8333, "desc": "France's newest national park, temperate broadleaf forests."},
+    ]
+    for park in FRENCH_NATIONAL_PARKS:
+        if in_radius(park["lat"], park["lng"]):
+            if not feature_ids or any(f in feature_ids for f in ("park", "national_park", "nature_reserve")):
+                yield {
+                    "name": park["name"],
+                    "type": "National Park",
+                    "lat": park["lat"],
+                    "lng": park["lng"],
+                    "elevation": "",
+                    "description": park["desc"],
+                    "wikipedia": f"https://en.wikipedia.org/wiki/{park['name'].replace(' ', '_')}",
+                    "website": "https://www.parcsnationaux.fr",
+                    "region": "",
+                    "country": "France",
+                    "image": "",
+                    "osm_id": "",
+                    "source": "Parcs Nationaux de France (Govt)",
+                    "confidence": "High",
+                }
 
 
 # ── UK — Ordnance Survey Open Data ───────────────────────────────────────────
@@ -306,53 +342,56 @@ async def fetch_uk(
     bbox = f"{lng-deg},{lat-deg},{lng+deg},{lat+deg}"
 
     # Search terms covering all outdoor feature types
-    search_terms = [
-        "fell", "moor", "forest", "lake", "loch", "reservoir",
-        "waterfall", "force", "beck", "tarn", "peak", "mountain",
-        "hill", "dale", "valley", "gorge", "cave", "cliff",
-        "national park", "nature reserve", "bay", "beach", "island",
+    # OS Names API local types to query
+    # Using LOCAL_TYPE filter via fq parameter — correct OS API format
+    local_types = [
+        "Waterfall", "Lake", "Loch", "Reservoir", "Mountain", "Hill", "Fell",
+        "Forest Or Woodland", "National Park", "Country Park", "Valley", "Glen",
+        "Dale", "Gorge", "Cave", "Cliff", "Bay", "Beach", "Moor Or Heath",
+        "Nature Reserve", "River", "Island", "Summit",
+        "Area Of Outstanding Natural Beauty", "National Scenic Area",
     ]
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for term in search_terms:
+        for local_type in local_types:
             try:
-                await rate_limiter.wait("api.os.uk", 0.6)
+                await rate_limiter.wait("api.os.uk", 0.7)
                 resp = await client.get(
                     "https://api.os.uk/search/names/v1/find",
                     params={
-                        "query":      term,
-                        "fq":         f"bbox:{bbox}",
+                        "fq":         f"LOCAL_TYPE:{local_type}",
+                        "bbox":       bbox,
                         "maxresults": 100,
                         "key":        OS_API_KEY,
                     },
                 )
                 if resp.status_code != 200:
-                    print(f"[UK/OS] {term} → HTTP {resp.status_code}: {resp.text[:200]}")
+                    print(f"[UK/OS] {local_type} → HTTP {resp.status_code}: {resp.text[:300]}")
                     continue
 
                 data = resp.json()
-                for feat in data.get("results", []):
+                features = data.get("results", [])
+                print(f"[UK/OS] {local_type} → {len(features)} results")
+
+                for feat in features:
                     g = feat.get("GAZETTEER_ENTRY", {})
                     name = g.get("NAME1", "") or g.get("NAME2", "")
                     if not name or name in seen:
                         continue
-                    # OS returns coordinates in EPSG:27700 (BNG) as GEOMETRY_X/Y
-                    # but also provides LNG/LAT directly
-                    f_lat = g.get("LAT") or g.get("GEOMETRY_Y")
-                    f_lng = g.get("LNG") or g.get("GEOMETRY_X")
-                    if not f_lat or not f_lng:
+                    f_lat = g.get("LAT")
+                    f_lng = g.get("LNG")
+                    if f_lat is None or f_lng is None:
+                        # fallback to GEOMETRY coords (BNG - skip, unreliable for lat/lng)
                         continue
                     try:
                         f_lat, f_lng = float(f_lat), float(f_lng)
                     except (TypeError, ValueError):
                         continue
-                    # Sanity check — UK is lat 49-61, lng -8 to 2
                     if not (49 < f_lat < 61 and -8 < f_lng < 2):
                         continue
                     if not _os_within_radius(lat, lng, f_lat, f_lng, radius_km):
                         continue
                     seen.add(name)
-                    local_type = g.get("LOCAL_TYPE", "")
                     type_label, type_id = _os_guess_type(local_type, name)
                     yield {
                         "name":        name,
@@ -360,9 +399,9 @@ async def fetch_uk(
                         "lat":         round(f_lat, 6),
                         "lng":         round(f_lng, 6),
                         "elevation":   "",
-                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", "") or g.get("POPULATED_PLACE", ""),
+                        "region":      g.get("DISTRICT_BOROUGH", "") or g.get("COUNTY_UNITARY", "") or g.get("COUNTY_UNITARY_BOROUGH", ""),
                         "country":     "United Kingdom",
-                        "description": f"{local_type}",
+                        "description": local_type,
                         "wikipedia":   "",
                         "website":     "https://osdatahub.os.uk",
                         "image":       "",
@@ -371,7 +410,7 @@ async def fetch_uk(
                         "confidence":  "High",
                     }
             except Exception as e:
-                print(f"[UK/OS] {term} error: {e}")
+                print(f"[UK/OS] {local_type} error: {e}")
                 continue
 
 
@@ -445,139 +484,213 @@ async def fetch_newzealand(
             print(f"[NZ DOC] {fid} error: {e}")
 
 
-# ── Australia — data.gov.au ───────────────────────────────────────────────────
+# ── Australia — Protected Planet + hardcoded parks ───────────────────────────
 
 async def fetch_australia(
     lat: float, lng: float, radius_km: float, feature_ids: List[str]
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Australia: data.gov.au CKAN API — free, no key needed.
+    Australia: 
+    1. Protected Planet API (IUCN) — free, no key, global protected areas
+    2. Hardcoded major Australian national parks
     """
-    try:
-        await rate_limiter.wait("data.gov.au", 0.5)
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                "https://data.gov.au/api/3/action/package_search",
-                params={
-                    "q": "national park trails",
-                    "rows": 20,
-                },
-            )
-            # data.gov.au returns dataset metadata, not geo features directly
-            # For actual geo features, use Australian OSM + Wikipedia
-    except Exception as e:
-        print(f"[AU data.gov.au] error: {e}")
+    import math
 
-    # Australia Wikipedia GeoSearch
+    def in_radius(f_lat, f_lng):
+        dlat = math.radians(f_lat - lat)
+        dlng = math.radians(f_lng - lng)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(f_lat)) * math.sin(dlng/2)**2
+        return 6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)) <= radius_km
+
+    # 1. Protected Planet API — IUCN protected areas (free, no key for basic)
     try:
-        await rate_limiter.wait("en.wikipedia.org", 0.5)
+        await rate_limiter.wait("api.protectedplanet.net", 1.0)
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
-                "https://en.wikipedia.org/w/api.php",
+                "https://api.protectedplanet.net/v3/protected_areas/search",
                 params={
-                    "action": "query",
-                    "list": "geosearch",
-                    "gscoord": f"{lat}|{lng}",
-                    "gsradius": min(radius_km * 1000, 10000),
-                    "gslimit": 50,
-                    "format": "json",
-                    "origin": "*",
+                    "with_geometry": False,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "radius": int(radius_km),
+                    "country": "AU",
+                    "per_page": 50,
                 },
             )
-            data = resp.json()
-            au_keywords = ['gorge', 'falls', 'national park', 'ranges', 'beach', 'reef', 'lagoon', 'creek', 'billabong', 'outback', 'rock', 'cave', 'mountain', 'peak', 'coast', 'bay']
-            for page in data.get("query", {}).get("geosearch", []):
-                title = page.get("title", "")
-                if any(kw in title.lower() for kw in au_keywords):
-                    from extractors.wikipedia import guess_type
-                    type_label, type_id = guess_type(title)
+            if resp.status_code == 200:
+                data = resp.json()
+                for area in data.get("protected_areas", []):
+                    f_lat = area.get("centroid", {}).get("lat")
+                    f_lng = area.get("centroid", {}).get("long")
+                    if not f_lat or not f_lng:
+                        continue
+                    if not in_radius(float(f_lat), float(f_lng)):
+                        continue
                     yield {
-                        "name": title,
-                        "type": type_label,
-                        "type_id": type_id,
-                        "lat": page.get("lat", 0),
-                        "lng": page.get("lon", 0),
+                        "name": area.get("name", ""),
+                        "type": "Nature Reserve",
+                        "lat": round(float(f_lat), 6),
+                        "lng": round(float(f_lng), 6),
                         "elevation": "",
-                        "description": "",
-                        "wikipedia": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
-                        "website": "",
-                        "region": "",
+                        "description": f"IUCN Category {area.get('iucn_category', {}).get('name', '')} — {area.get('marine', 'Land')} protected area",
+                        "wikipedia": "",
+                        "website": f"https://www.protectedplanet.net/{area.get('wdpa_id', '')}",
+                        "region": area.get("sub_location", ""),
                         "country": "Australia",
                         "image": "",
                         "osm_id": "",
-                        "source": "Wikipedia (Australia)",
+                        "source": "Protected Planet/IUCN (AU)",
                         "confidence": "High",
                     }
+            else:
+                print(f"[AU ProtectedPlanet] HTTP {resp.status_code}")
     except Exception as e:
-        print(f"[AU Wikipedia] error: {e}")
+        print(f"[AU ProtectedPlanet] error: {e}")
+
+    # 2. Major Australian National Parks — hardcoded official list
+    AU_NATIONAL_PARKS = [
+        {"name": "Kakadu National Park", "lat": -12.9252, "lng": 132.4196, "desc": "Australia's largest national park, UNESCO World Heritage."},
+        {"name": "Blue Mountains National Park", "lat": -33.6333, "lng": 150.3000, "desc": "Dramatic sandstone escarpments, waterfalls and eucalypt forests."},
+        {"name": "Great Barrier Reef Marine Park", "lat": -18.2861, "lng": 147.7000, "desc": "World's largest coral reef system, UNESCO World Heritage."},
+        {"name": "Uluru-Kata Tjuta National Park", "lat": -25.3444, "lng": 131.0369, "desc": "Sacred Aboriginal site, iconic red sandstone monolith."},
+        {"name": "Daintree National Park", "lat": -16.1700, "lng": 145.4200, "desc": "World's oldest tropical rainforest, UNESCO World Heritage."},
+        {"name": "Flinders Ranges National Park", "lat": -31.9167, "lng": 138.6833, "desc": "Ancient mountain ranges, Aboriginal rock art, unique wildlife."},
+        {"name": "Cradle Mountain National Park", "lat": -41.6500, "lng": 145.9333, "desc": "Iconic Tasmanian wilderness, glacial lakes and alpine heathlands."},
+        {"name": "Purnululu National Park", "lat": -17.5000, "lng": 128.4000, "desc": "Beehive-shaped Bungle Bungle sandstone formations."},
+        {"name": "Wilsons Promontory National Park", "lat": -39.0833, "lng": 146.3667, "desc": "Southernmost point of mainland Australia, pristine beaches."},
+        {"name": "Lamington National Park", "lat": -28.2167, "lng": 153.1500, "desc": "Ancient volcanic rim, subtropical rainforest, World Heritage."},
+        {"name": "Shark Bay Marine Park", "lat": -25.9667, "lng": 113.8500, "desc": "UNESCO World Heritage, stromatolites and dugong sanctuary."},
+        {"name": "Namadgi National Park", "lat": -35.5667, "lng": 148.7833, "desc": "Alpine wilderness adjoining Kosciuszko National Park."},
+    ]
+    for park in AU_NATIONAL_PARKS:
+        if in_radius(park["lat"], park["lng"]):
+            if not feature_ids or any(f in feature_ids for f in ("park", "national_park", "nature_reserve")):
+                yield {
+                    "name": park["name"],
+                    "type": "National Park",
+                    "lat": park["lat"],
+                    "lng": park["lng"],
+                    "elevation": "",
+                    "description": park["desc"],
+                    "wikipedia": f"https://en.wikipedia.org/wiki/{park['name'].replace(' ', '_')}",
+                    "website": "https://www.environment.gov.au/land/nrs/national-parks",
+                    "region": "",
+                    "country": "Australia",
+                    "image": "",
+                    "osm_id": "",
+                    "source": "Parks Australia (Govt)",
+                    "confidence": "High",
+                }
 
 
-# ── Japan — GSI API ───────────────────────────────────────────────────────────
+# ── Japan — GSI Feature Search + National Parks ───────────────────────────────
 
 async def fetch_japan(
     lat: float, lng: float, radius_km: float, feature_ids: List[str]
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Japan: GSI (Geospatial Information Authority) — free API.
-    + Wikipedia Japanese/English GeoSearch.
+    Japan:
+    1. GSI (Geospatial Information Authority) place name search
+    2. Hardcoded Japan National Parks (Ministry of Environment official list)
     """
-    # GSI Reverse Geocode to get area name
-    try:
-        await rate_limiter.wait("mreversegeocoder.gsi.go.jp", 0.5)
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(
-                "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress",
-                params={"lat": lat, "lon": lng},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                muniNm = data.get("results", {}).get("muniNm", "")
-                lv01Nm = data.get("results", {}).get("lv01Nm", "")
-    except Exception as e:
-        print(f"[Japan GSI] error: {e}")
+    import math
 
-    # Japan Wikipedia GeoSearch (English + Japanese features)
+    def in_radius(f_lat, f_lng):
+        dlat = math.radians(f_lat - lat)
+        dlng = math.radians(f_lng - lng)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(f_lat)) * math.sin(dlng/2)**2
+        return 6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)) <= radius_km
+
+    # 1. GSI Place name search — Japanese govt topo feature names
+    GSI_FEATURE_TYPES = ["滝", "山", "湖", "峠", "渓谷", "海岸", "岬", "洞窟"]  # falls, mountain, lake, pass, valley, coast, cape, cave
+    GSI_TYPE_MAP = {"滝": "Waterfall", "山": "Peak", "湖": "Lake", "峠": "Pass", "渓谷": "Valley", "海岸": "Beach", "岬": "Viewpoint", "洞窟": "Cave"}
+
     try:
-        await rate_limiter.wait("en.wikipedia.org", 0.5)
+        await rate_limiter.wait("msearch.gsi.go.jp", 0.5)
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "list": "geosearch",
-                    "gscoord": f"{lat}|{lng}",
-                    "gsradius": min(radius_km * 1000, 10000),
-                    "gslimit": 50,
-                    "format": "json",
-                    "origin": "*",
-                },
-            )
-            data = resp.json()
-            jp_keywords = ['mount', 'peak', 'lake', 'falls', 'onsen', 'shrine', 'park', 'coast', 'beach', 'forest', 'trail', 'gorge', 'valley', 'volcano', 'jinja', 'yama', 'ko', 'taki']
-            for page in data.get("query", {}).get("geosearch", []):
-                title = page.get("title", "")
-                if any(kw in title.lower() for kw in jp_keywords):
-                    from extractors.wikipedia import guess_type
-                    type_label, type_id = guess_type(title)
+            deg = radius_km / 111.0
+            for jp_type in GSI_FEATURE_TYPES:
+                resp = await client.get(
+                    "https://msearch.gsi.go.jp/address-search/AddressSearch",
+                    params={
+                        "q": jp_type,
+                        "lon": lng,
+                        "lat": lat,
+                        "distance": radius_km * 1000,
+                    },
+                )
+                if resp.status_code != 200:
+                    continue
+                items = resp.json()
+                for item in (items if isinstance(items, list) else []):
+                    props = item.get("properties", {})
+                    geom = item.get("geometry", {})
+                    coords = geom.get("coordinates", [])
+                    if len(coords) < 2:
+                        continue
+                    f_lng, f_lat = float(coords[0]), float(coords[1])
+                    if not in_radius(f_lat, f_lng):
+                        continue
+                    name = props.get("title", "")
+                    if not name:
+                        continue
                     yield {
-                        "name": title,
-                        "type": type_label,
-                        "type_id": type_id,
-                        "lat": page.get("lat", 0),
-                        "lng": page.get("lon", 0),
+                        "name": name,
+                        "type": GSI_TYPE_MAP.get(jp_type, "Natural Feature"),
+                        "lat": round(f_lat, 6),
+                        "lng": round(f_lng, 6),
                         "elevation": "",
-                        "description": "",
-                        "wikipedia": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
-                        "website": "",
-                        "region": "",
+                        "description": f"GSI official feature — {jp_type}",
+                        "wikipedia": "",
+                        "website": "https://maps.gsi.go.jp",
+                        "region": props.get("addressCode", "")[:2],
                         "country": "Japan",
                         "image": "",
                         "osm_id": "",
-                        "source": "GSI+Wikipedia (Japan)",
+                        "source": "GSI Japan (Govt)",
                         "confidence": "High",
                     }
+                await rate_limiter.wait("msearch.gsi.go.jp", 0.5)
     except Exception as e:
-        print(f"[Japan Wikipedia] error: {e}")
+        print(f"[Japan GSI search] error: {e}")
+
+    # 2. Japan National Parks — Ministry of Environment official list
+    JAPAN_NATIONAL_PARKS = [
+        {"name": "Daisetsuzan National Park", "lat": 43.6667, "lng": 142.8333, "desc": "Japan's largest national park, volcanic peaks and hot springs."},
+        {"name": "Shiretoko National Park", "lat": 44.1000, "lng": 145.0000, "desc": "UNESCO World Heritage, remote peninsula with bears and eagles."},
+        {"name": "Akan-Mashu National Park", "lat": 43.4500, "lng": 144.3500, "desc": "Volcanic calderas, rare marimo algae, Lake Mashu."},
+        {"name": "Nikko National Park", "lat": 36.7500, "lng": 139.5000, "desc": "Ancient shrines, waterfalls, alpine lakes and volcanic peaks."},
+        {"name": "Joshinetsu Kogen National Park", "lat": 36.7000, "lng": 138.5000, "desc": "Volcanic plateau, skiing, alpine flora."},
+        {"name": "Fuji-Hakone-Izu National Park", "lat": 35.3607, "lng": 138.7274, "desc": "Mount Fuji, hot springs, Izu Peninsula coastline."},
+        {"name": "Chubu Sangaku National Park", "lat": 36.3000, "lng": 137.6500, "desc": "Japanese Alps — Tateyama, Hotaka, dramatic mountain scenery."},
+        {"name": "Yoshino-Kumano National Park", "lat": 34.0000, "lng": 135.8333, "desc": "UNESCO World Heritage pilgrimage routes through ancient forests."},
+        {"name": "San-in Kaigan National Park", "lat": 35.6333, "lng": 134.8000, "desc": "Rugged Sea of Japan coastline, sea caves and rock formations."},
+        {"name": "Daisen-Oki National Park", "lat": 35.3667, "lng": 133.5333, "desc": "Volcanic Mount Daisen and remote Oki Islands."},
+        {"name": "Setonaikai National Park", "lat": 34.2833, "lng": 133.5000, "desc": "Japan's first national park, scenic island-dotted inland sea."},
+        {"name": "Aso-Kuju National Park", "lat": 32.8833, "lng": 131.1000, "desc": "World's largest volcanic caldera, active Mount Aso."},
+        {"name": "Kirishima-Kinkowan National Park", "lat": 31.9333, "lng": 130.8667, "desc": "Volcanic mountains, crater lakes, and Kagoshima Bay."},
+        {"name": "Yakushima National Park", "lat": 30.3500, "lng": 130.5333, "desc": "UNESCO World Heritage, ancient cedar forests, Jomon Sugi tree."},
+        {"name": "Iriomote-Ishigaki National Park", "lat": 24.3500, "lng": 123.8000, "desc": "Tropical jungle, mangroves and coral reefs of the Yaeyama Islands."},
+    ]
+    for park in JAPAN_NATIONAL_PARKS:
+        if in_radius(park["lat"], park["lng"]):
+            if not feature_ids or any(f in feature_ids for f in ("park", "national_park", "nature_reserve")):
+                yield {
+                    "name": park["name"],
+                    "type": "National Park",
+                    "lat": park["lat"],
+                    "lng": park["lng"],
+                    "elevation": "",
+                    "description": park["desc"],
+                    "wikipedia": f"https://en.wikipedia.org/wiki/{park['name'].replace(' ', '_')}",
+                    "website": "https://www.env.go.jp/nature/np/",
+                    "region": "",
+                    "country": "Japan",
+                    "image": "",
+                    "osm_id": "",
+                    "source": "Ministry of Environment Japan (Govt)",
+                    "confidence": "High",
+                }
 
 
 # ── India — Bhuvan + data.gov.in ─────────────────────────────────────────────
