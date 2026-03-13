@@ -226,7 +226,8 @@ async def fetch_france(
 
 # ── UK — Ordnance Survey Open Data ───────────────────────────────────────────
 
-OS_API_KEY = "KpPcU552wYROgNMtYHTmE18HgQl1UmXA"
+import os
+OS_API_KEY = os.getenv("OS_API_KEY", "")
 
 # OS Names API local type → WildData type mapping
 OS_TYPE_MAP = {
