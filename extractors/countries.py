@@ -359,6 +359,7 @@ async def fetch_uk(
                 resp = await client.get(
                     "https://api.os.uk/search/names/v1/find",
                     params={
+                        "query":      "*",
                         "fq":         f"LOCAL_TYPE:{local_type}",
                         "bbox":       bbox,
                         "maxresults": 100,
