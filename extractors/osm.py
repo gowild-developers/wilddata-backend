@@ -90,6 +90,16 @@ out tags center {limit};"""
                     lang = parts[0] if len(parts) == 2 else "en"
                     wiki_url = f"https://{lang}.wikipedia.org/wiki/{page.replace(' ', '_')}"
 
+                # Confidence: High only if has real name + wikipedia tag
+                # Medium if has name only
+                # Low if unnamed
+                if name and wiki_url:
+                    confidence = "High"
+                elif name:
+                    confidence = "Medium"
+                else:
+                    confidence = "Low"
+
                 yield {
                     "name": name,
                     "type": label,
@@ -98,14 +108,14 @@ out tags center {limit};"""
                     "lng": el_lng,
                     "elevation": tags.get("ele", ""),
                     "description": tags.get("description") or tags.get("description:en") or "",
-                    "wikipedia": wiki_url,
+                    "wikipedia": wiki_url,  # only set if OSM tag has wikipedia= explicitly
                     "website": tags.get("website") or tags.get("url") or "",
                     "region": tags.get("addr:state") or tags.get("is_in:state") or "",
                     "country": tags.get("addr:country") or tags.get("is_in:country") or "",
-                    "image": "",
+                    "image": tags.get("image") or tags.get("wikimedia_commons") or "",
                     "osm_id": f"{el.get('type','node')}/{el.get('id','')}",
                     "source": "OSM",
-                    "confidence": "High" if name else "Low",
+                    "confidence": confidence,
                 }
 
         except Exception as e:
