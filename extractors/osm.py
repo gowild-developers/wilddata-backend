@@ -1,56 +1,114 @@
-from typing import List, Dict, Any
-import math
+import httpx
+from typing import List, Dict, Any, AsyncGenerator
+from utils.rate_limiter import rate_limiter
 
-def haversine_km(lat1, lng1, lat2, lng2) -> float:
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lng2 - lng1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-def deduplicate(results: List[Dict[str, Any]], radius_km: float = 0.05) -> List[Dict[str, Any]]:
+FEATURE_TAGS = {
+    "waterfall":    ('node', '"waterway"="waterfall"'),
+    "hiking":       ('relation', '"route"="hiking"'),
+    "mtb":          ('relation', '"route"="mtb"'),
+    "motorbiking":  ('relation', '"route"="motorcycle"'),
+    "peak":         ('node', '"natural"="peak"'),
+    "park":         ('relation', '"boundary"="national_park"'),
+    "viewpoint":    ('node', '"tourism"="viewpoint"'),
+    "camp":         ('node', '"tourism"="camp_site"'),
+    "cave":         ('node', '"natural"="cave_entrance"'),
+    "hot_spring":   ('node', '"natural"="hot_spring"'),
+    "waterway":     ('node|way', '"natural"~"water"'),  # lakes/ponds only — no rivers
+    "beach":        ('node|way', '"natural"="beach"'),
+    "glacier":      ('way', '"natural"="glacier"'),
+    "volcano":      ('node', '"natural"="volcano"'),
+    "forest":       ('relation', '"boundary"="protected_area"'),
+}
+
+FEATURE_LABELS = {
+    "waterfall": "Waterfall", "hiking": "Hiking Route", "mtb": "MTB / Cycling",
+    "motorbiking": "Motorbiking Route", "peak": "Mountain Peak", "park": "National Park",
+    "viewpoint": "Viewpoint", "camp": "Campsite", "cave": "Cave",
+    "hot_spring": "Hot Spring", "waterway": "Lake / Pond", "beach": "Beach",
+    "glacier": "Glacier", "volcano": "Volcano", "forest": "Protected Forest",
+}
+
+async def fetch_osm(
+    lat: float,
+    lng: float,
+    radius_m: int,
+    feature_ids: List[str],
+    limit: int = 500,
+) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Merge duplicate entries within radius_km of each other with same type.
-    Keeps entry with most data, merges fields from others.
+    Fetch features from OSM Overpass API.
+    Yields one result dict at a time.
     """
-    merged = []
+    timeout = 60
 
-    for r in results:
-        found = False
-        for m in merged:
-            # Same type and within radius
-            if m.get('type_id') == r.get('type_id'):
-                dist = haversine_km(m['lat'], m['lng'], r['lat'], r['lng'])
-                if dist <= radius_km:
-                    # Merge — prefer non-empty values
-                    if not m.get('name') and r.get('name'):
-                        m['name'] = r['name']
-                    if not m.get('description') and r.get('description'):
-                        m['description'] = r['description']
-                    if not m.get('wikipedia') and r.get('wikipedia'):
-                        m['wikipedia'] = r['wikipedia']
-                    if not m.get('elevation') and r.get('elevation'):
-                        m['elevation'] = r['elevation']
-                    if not m.get('region') and r.get('region'):
-                        m['region'] = r['region']
-                    if not m.get('country') and r.get('country'):
-                        m['country'] = r['country']
-                    if not m.get('image') and r.get('image'):
-                        m['image'] = r['image']
-                    if not m.get('website') and r.get('website'):
-                        m['website'] = r['website']
-                    # Upgrade confidence
-                    conf_rank = {'High': 3, 'Medium': 2, 'Low': 1}
-                    if conf_rank.get(r.get('confidence','Low'), 1) > conf_rank.get(m.get('confidence','Low'), 1):
-                        m['confidence'] = r['confidence']
-                    # Merge source labels
-                    existing_sources = m.get('source', '').split('+')
-                    new_source = r.get('source', '')
-                    if new_source and new_source not in existing_sources:
-                        m['source'] = m.get('source', '') + '+' + new_source
-                    found = True
-                    break
-        if not found:
-            merged.append(dict(r))  # copy
+    for fid in feature_ids:
+        if fid not in FEATURE_TAGS:
+            continue
 
-    return merged
+        el_type, tag = FEATURE_TAGS[fid]
+        label = FEATURE_LABELS.get(fid, fid)
+
+        query = f"""[out:json][timeout:{timeout}];
+(
+  {el_type}[{tag}](around:{radius_m},{lat},{lng});
+);
+out tags center {limit};"""
+
+        try:
+            await rate_limiter.wait("overpass-api.de", 1.5)
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    OVERPASS_URL,
+                    data={"data": query},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            elements = data.get("elements", [])
+
+            for el in elements:
+                el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
+                el_lng = el.get("lon") or (el.get("center") or {}).get("lon")
+                if not el_lat or not el_lng:
+                    continue
+
+                tags = el.get("tags", {})
+                name = (
+                    tags.get("name:en") or
+                    tags.get("name") or
+                    tags.get("int_name") or
+                    ""
+                )
+                wiki_tag = tags.get("wikipedia", "")
+                wiki_url = ""
+                if wiki_tag:
+                    parts = wiki_tag.split(":", 1)
+                    page = parts[1] if len(parts) == 2 else parts[0]
+                    lang = parts[0] if len(parts) == 2 else "en"
+                    wiki_url = f"https://{lang}.wikipedia.org/wiki/{page.replace(' ', '_')}"
+
+                yield {
+                    "name": name,
+                    "type": label,
+                    "type_id": fid,
+                    "lat": el_lat,
+                    "lng": el_lng,
+                    "elevation": tags.get("ele", ""),
+                    "description": tags.get("description") or tags.get("description:en") or "",
+                    "wikipedia": wiki_url,
+                    "website": tags.get("website") or tags.get("url") or "",
+                    "region": tags.get("addr:state") or tags.get("is_in:state") or "",
+                    "country": tags.get("addr:country") or tags.get("is_in:country") or "",
+                    "image": "",
+                    "osm_id": f"{el.get('type','node')}/{el.get('id','')}",
+                    "source": "OSM",
+                    "confidence": "High" if name else "Low",
+                }
+
+        except Exception as e:
+            # Log and continue — don't crash entire extraction
+            print(f"[OSM] {fid} error: {e}")
+            continue
