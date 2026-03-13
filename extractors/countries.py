@@ -130,7 +130,7 @@ async def fetch_usa(
                         "lng": f_lng,
                         "elevation": str(item.get("elevation", "")) + "m" if item.get("elevation") else "",
                         "description": item.get("fcodeName", ""),
-                        "wikipedia": f"https://en.wikipedia.org/wiki/{item.get('name','').replace(' ','_')}",
+                        "wikipedia": "",  # USGS has no verified wikipedia links
                         "website": "",
                         "region": item.get("adminName1", ""),
                         "country": "United States",
@@ -356,10 +356,12 @@ async def fetch_uk(
         for local_type in local_types:
             try:
                 await rate_limiter.wait("api.os.uk", 0.7)
+                # OS Names API: query = simplified type name, fq filters by exact LOCAL_TYPE
+                query_term = local_type.split()[0].lower()  # e.g. "Moor Or Heath" → "moor"
                 resp = await client.get(
                     "https://api.os.uk/search/names/v1/find",
                     params={
-                        "query":      "*",
+                        "query":      query_term,
                         "fq":         f"LOCAL_TYPE:{local_type}",
                         "bbox":       bbox,
                         "maxresults": 100,
